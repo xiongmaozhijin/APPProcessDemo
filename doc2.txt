@@ -1,0 +1,138 @@
+就从 app_process 开始吧。
+
+app_process
+app_process 是 Android 上的一个原生程序，是 APP 进程的主入口点。总之就是个可以让虚拟机从 main() 方法开始执行一个 Java 程序的东西啦。
+
+参数和用法
+这个命令没有帮助程序，还好 源代码 里说得很清楚
+
+Usage: app_process [java-options] cmd-dir start-class-name [options]
+对这些参数的详细介绍也在 源代码 里，基本上是这样
+
+java-options     - 传递给 JVM 的参数
+cmd-dir          - 暂时没有用，学着 init.rc.* 里给传个 /system/bin 就好
+start-class-name - 程序入口， main() 方法所在的类名
+options          - 可以是下面这些
+                    --zygote 启动 zygote 进程用的
+                    --start-system-server 启动系统服务(也是启动 zygote 进程的时候用的)
+                    --application 启动应用程序
+                    --nice-name=启动之后的进程名称
+根据源代码还能得出一些关于这些参数的更加详细的结论。
+
+根据 这里，传入 --zygote 会启动 com.android.internal.os.ZygoteInit，否则启动 com.android.internal.os.RuntimeInit。
+可以发现 --start-system-server 只在启动 zygote 时有效。
+在非 zygote 模式中，有无 --application 的选项的区别只是 是否将 stdout 和 stderr 重定向到 AndroidPrintStream 。
+也只有在 非 zygote 的情况下，--nice-name= 选项有效。
+本文不探讨 zygote 的启动过程，因此要用到哪些参数就很明确了。
+
+CLASSPATH
+与 Java 相似， Android 支持在环境变量 CLASSPATH 中指定类搜索路径 (CLASSPATH)，此外还可以在虚拟机参数中指定 -Djava.class.path= 。但是， Android 使用 ART 环境运行 Java ，传统的 Java 字节码文件(.class) 是不能直接运行的，app_process 支持在 CLASSPATH 中指定 dex 或 apk 文件。
+
+# 使用 dex
+CLASSPATH=/data/local/tmp/test.dex app_process /system/bin moe.haruue.Test
+app_process -Djava.class.path=/data/local/tmp/test.dex /system/bin moe.haruue.Test
+
+# 使用 apk
+CLASSPATH=/data/app/moe.haruue.test-1/base.apk app_process /system/bin moe.haruue.Test
+app_process -Djava.class.path=/data/app/moe.haruue.test-1/base.apk /system/bin moe.haruue.Test
+启动一个 app_process 进程
+比较方便的做法是直接使用 apk 作为 CLASSPATH ，而不是使用 dex 。因为在应用安装完成之后，就可以很轻松地将 CLASSPATH 暴露在 adb 可以轻松访问到的位置 (/data/app/com.package.name-*/base.apk) ，而不需要任何额外的操作或者权限。
+
+只需 4 步就能启动一个 app_process 进程：
+
+创建或使用一个已有的 Android 应用程序项目，这里假设你使用的包名是 com.package.name。
+增加一个包含有 main 方法的类，这里假设是 com.package.name.Main。
+使用 adb 连接手机，编译并安装这个应用到手机。
+使用 adb shell 在手机上执行对应的 app_process 命令启动进程。
+又是 CLASSPATH
+涉及到的一个问题是确定 apk 的位置，因为 Android 4.4 后将 app 安装在 /data/app/com.package.name-*/base.apk。在 Java 代码中可以使用 context.getPackageManager().getApplicationInfo(context.getPackageName(), 0).publicSourceDir 获取这个路径，在 adb shell 下可以使用 pm path com.package.name ，当然如果你只是想做个测试，用 bash 的通配符搞定就好啦。
+
+CLASSPATH=$(echo /data/app/com.package.name-*/base.apk) \
+app_process /system/bin com.package.name.Main
+后台运行
+如果想要在后台运行，可以用系统的 nohup 命令 (Android 6.0 把 toolbox 换成 toybox 之后才开始自带这个) ，别忘了重定向 stdout 和 stderr ，并使用 --nice-name= 取个好听的进程名，以便在需要的时候能够使用 killall 结束它。
+
+CLASSPATH=$(echo /data/app/com.package.name-*/base.apk) \
+nohup app_process /system/bin --nice-name=process_name com.package.name.Main > /dev/null 2>&1 &
+当然你也可以自己写一个 C 程序，在调用 daemon() 函数后启动 app_process 进程。
+
+使用特权 API
+很多特权 API 对第三方开发者并不可见，或者我们需要使用一些奇怪的技巧去调用它，首先需要想办法调用这些看不见的 API 。
+
+调用隐藏 API
+Android 源代码中使用 @hide 隐藏了大量正常 Android 开发用不到的类和方法，即使它们实际上都是 public 的，Android Studio 还是认为它们不存在，虽然可以通过反射调用，但是还是太麻烦了。
+
+这里利用一下 Android 的类加载机制。apk 中应用开发者定义的类是由 PathClassLoader 加载的，framework 的类则是由 BootClassLoader 加载的，在系统构建 PathClassLoader 的时候将 BootClassLoader 作为它的 parent 。考虑到类加载器实现了 双亲委托机制 ，我们可以在项目中定义与 framework 类路径一致的类，在这些类里定义与那些 @hide 方法签名一致，实现为空 (如抛出运行时异常) 的方法，这样 Android Studio 就会识别它们，自动补全也可以正常工作。如果需要的接口是使用 aidl 定义的，我们也可以定义相同的 aidl 文件。
+
+然而，实际上并没有这么简单，对于 Android Phone & Tablet Module 和 Android Library Module 来说，Android Studio 也会默认先加载 SDK 里的类，利用上面的方法可以定义那些 Android Studio 本来认为不存在的类 (即 @hide 掉整个 class 的情况) ，而定义 Android Studio 认为已经存在的类 (只 @hide 掉方法或者内部类的情况) 则没有任何效果。这种情况下我们可以将这些实现为空的类放到 Java Library Module 里，这样 Android Studio 就不会加载 SDK 里的类了。类似地，考虑到使用 app_process 启动的进程只是一个 Java 进程，我们也可以根据需要将它放到 Java Library Module 里。
+
+Android 源代码中还有一些类或方法是包内访问 (package-local) 的，这种情况下只需要在项目中建立它们所在的包，然后在这个包下面建立与源代码中已存在的类类名不重复的类，就可以使用这些类访问它们了。
+
+注意，标记为 @hide 的 API 在 Android 版本迭代的过程中被作为内部实现处理，可能会经常变化，请谨慎使用，及时适配新的 Android 版本，以防 在 Android 系统更新的时候被 framework 鄙视 。
+
+通常情况下，我们使用一个专门的 module 来存放这些实现为空的类，使用另一个专门的 module 写 app_process 的进程部分，并利用 gradle 配置好依赖关系。特别地，如果需要的类和方法在不同的 Android 版本中发生了变化，你可以定义一些代理类，判断 Android 版本并调用到正确的 framework 方法上。
+
+绕过 context
+实际上通过 app_process 启动的是一个 Java 程序，与一般的 Android 程序不同，我们没有常见的 context 。为了绕过对 context 的需要，还是需要做不少事情。
+
+比如说需要安装一个 apk ，先考虑一般的套路:
+
+context.getPackageManager().installPackage("file:///sdcard/path/to/package.apk", null, PackageManager.INSTALL_REPLACE_EXISTING, null)
+要绕过对 context 的需要，得研究一下上面的过程都干了什么。
+
+首先是 context.getPackageManager() ， context 的实现类是 ContextImpl 。我们从源代码中找到 ContextImpl.getPackageManager() ，它先是调用 ActivityThread.getPackageManager() 取得了一个 IPackageManager 对象，这实际上是一个可以与系统服务进行通信的 AIDL 接口 。在 ActivityThread.getPackageManager() 中，我们可以看到获取这个对象实际执行的过程:
+
+IPackageManager.Stub.asInterface(ServiceManager.getService("package"));
+实际上几乎所有的系统服务都是使用这样的方法获取的。在 Android 上，原生的跨进程方式只能使用 IBinder 实现，系统在启动的时候使用 ServiceManager.addSerice() 方法注册系统服务，在其它应用的进程中使用 ServiceManager.getService() 方法取得对应的 IBinder 对象。
+
+回到 ContextImpl.getPackageManager() 。随后返回的是一个 ApplicationPackageManager 对象，虽然构建它也需要用到 context 对象，但是我们关注的是它的 installPackage() 方法。这个方法也构建了一个 LegacyPackageInstallObserver 对象，最终在 installCommon() 方法中传递给了 IPackageManager.installPackageAsUser() ，这是一个与系统进程通信的 IBinder 对象，它的实现实际上在 PackageInstallerService.installPackageAsUser() 中，但是这些类存在于系统进程中，我们不可能直接访问到它们。
+
+展开这个调用过程，假设我们需要安装的安装包的位置在 /sdcard/test.apk ，并且装好后对系统声明的安装器为 Play 商店，最后我们得到的应该是:
+
+IPackageManager.Stub.asInterface(ServiceManager.getService("package"))
+    .installPackageAsUser(Uri.parse("/sdcard/test.apk").toString(), new PackageManager.LegacyPackageInstallObserver(null).getBinder(), 0x00000002, "com.android.vending", 0);
+在 main() 方法中加入这两行代码，解决一切无法调用隐藏 API 的问题，将随便哪个别的应用的 apk 安装包放到 /sdcard/test.apk 位置，使用 app_process 执行这个程序，随后就能在启动器中看到这个 apk 已经安装好了。
+
+特权
+与 APP 进程不同，通过 app_process 启动的进程可以在 root 权限和 shell 权限 (adb 默认) 下启动，也就分别拥有了不同的调用的 API 的能力。通常情况下 shell 权限启动的 app_process 只能够调用一些能够完成 adb 本身能做的事情的 API ，例如使用 AppOpsManager 管理应用权限 (类似于 appops 命令)，使用 PackageManager 安装应用程序 (类似于 pm 命令)，使用 InputManager 模拟触摸操作 (类似于 input 命令) ，访问 /data/local/tmp 以及 /sdcard 目录。 root 权限启动的 app_process 进程则拥有更多权限，甚至能够调用 signature 保护级别的 API 以及访问整个文件系统。
+
+为什么使用 app_process 进程
+上文有提到，很多能够用 app_process 进程做的事情实际上都有对应的命令。例如我们可以直接在 adb shell 中使用 Linux 命令访问文件系统，使用 pm, am, input, appops 命令等。实际上不少命令只是对调用 app_process 命令进行的一个封装，为了实现一个简单的目的而需要在等待对应的 app_process 进程启动上花费大量的时间，直接执行 shell 命令也可能因为 shell 的特性而引发注入等问题。很显然，在自己的应用程序中使用自定义的 app_process 进程完成批量操作比直接执行命令快很多并且安全很多。
+
+进程间通信
+使用命令行启动的 app_process 进程毕竟是运行在一个单独的进程上，我们不可能将需要让它做的一切事情都放在命令行参数或者硬编码到程序里。让它所在的进程与 APP 进程之间进行通信可以增加程序的易用性。
+
+网络
+socket 是 Java 程序中最容易实现的跨进程通信方法了，基本类型和众多实现了 Serializable 接口的类实例都可以很轻松地通过网络传输:
+
+ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream()));
+部分 Parcelable 接口对象也可以丢给网络，先将对象写入一个 Parcel 中，然后利用 Parcel.marshall() 和 Parcel.unmarshall() 方法序列化和反序列化为 byte[] ，缺点是不支持含有 IBinder 字段的 Parcelable 对象 。
+
+系统服务
+如同上文提到的。Android 系统使用 IBinder 的跨进程通信方式，系统在启动的时候使用 ServiceManager.addSerice() 方法注册系统服务，在其它应用的进程中使用 ServiceManager.getService() 方法取得对应的 IBinder 对象。应用程序则可以使用获取的 IBinder 对象与系统进程通信。
+
+既然系统可以这样做，我们也可以。前提是需要有 root 权限。
+
+使用 aidl 写一个接口定义，用一个类实现它，然后就可以使用它。还需要保证在执行 ServiceManager.addSerice() 之后服务进程不能退出，直接用 Looper 就好啦。
+
+坏耶，是 SELinux
+以上做法在部分手机上没有问题，但是在我的 Nexus 6 上抛出了异常。
+
+08-30 13:45:13.866 25754-25754/moe.haruue.peekintent:listener W/intent:listener: type=1400 audit(0.0:5481): avc: denied { call } for scontext=u:r:untrusted_app:s0:c512,c768 tcontext=u:r:su:s0 tclass=binder permissive=0
+实际上是 sepolicy 的问题，用 root 执行一下下面两条命令插入规则好了。
+
+sepolicy-inject --live "allow untrusted_app su binder transfer"
+sepolicy-inject --live "allow untrusted_app su binder call"
+具体做法可以看看 这个
+
+使用 Shizuku Manager
+Shizuku Manager 是 RikkaW 参考 黑域 做的一个项目，目的是使用单一的 app_process 后台进程取代各种需要用户手动通过 adb shell 或者利用 root 权限为每个需要特权 API 的程序启动的 app_process 进程，其它应用在申请用户授权之后就能使用 Shizuku Manager 的 API 调用所需的特权 API 了。当前这个项目仍在完善之中 所以除了 RikkaApps 之外就没人用了 。
+
+感谢
+对 app_process 利用方法的研究离不开以下项目和前辈的汗水。
+
+黑域 - liudongmiao 最早利用 app_process 进程实现无 root 权限使用并获得成功的应用
+Shizuku Manager - Rikka 写的利用 app_process 调用特权 API 的程序
+Android Open Source Project
+本人就做了一点微小的工作，很惭愧，谢谢大家。
