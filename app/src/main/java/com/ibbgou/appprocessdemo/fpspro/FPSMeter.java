@@ -12,18 +12,7 @@ import android.view.Surface;
 
 import com.ibbgou.appprocessdemo.HelloWorld;
 
-import java.util.concurrent.LinkedBlockingQueue;
-
 public class FPSMeter extends Thread {
-    private static final String TAG = "ARDC";
-
-    private static LinkedBlockingQueue<Integer> fpsQueue = new LinkedBlockingQueue<Integer>(3);
-
-    private double curTime = 0.0D;
-
-    private double elapsedTime = 0.0D;
-
-    private int mDpi;
 
     private Handler mHandler;
 
@@ -33,16 +22,9 @@ public class FPSMeter extends Thread {
 
     private int mRotation;
 
-    private VirtualDisplay mVirtualDisplay;
-
     private int mWidth;
 
-    private double preTime = 0.0D;
-
-    private int totalFrames = 0;
-
     public FPSMeter(int width, int height, int dpi, int paramInt4) {
-        this.mDpi = dpi;
         this.mRotation = paramInt4;
         this.mWidth = width;
         this.mHeight = height;
@@ -75,9 +57,12 @@ public class FPSMeter extends Thread {
             this.mImageReader.setOnImageAvailableListener(new ImageAvailableListener(), this.mHandler);
     }
 
+    private IBinder mIBinder;
+
     public void streamScreen() {
         LogUtils.w("FPSMeter", "streamScreen()");
         IBinder display = createDisplay();
+        mIBinder = display;
         System.out.println("token is =" + display);
         Rect rect = new Rect(0, 0, mWidth, mHeight);
         setDisplaySurface(display, mImageReader.getSurface(), rect, rect);
@@ -99,11 +84,19 @@ public class FPSMeter extends Thread {
     }
 
     public void stopMonitor() {
+        if (mHandler != null) {
+            mHandler.getLooper().quit();
+        }
+
         if (this.mImageReader != null)
             this.mImageReader.setOnImageAvailableListener(null, null);
-        if (this.mVirtualDisplay != null) {
-            this.mVirtualDisplay.release();
-            this.mVirtualDisplay = null;
+
+//        if (this.mVirtualDisplay != null) {
+//            this.mVirtualDisplay.release();
+//            this.mVirtualDisplay = null;
+//        }
+        if (mIBinder != null) {
+            SurfaceControl.destroyDisplay(mIBinder);
         }
     }
 

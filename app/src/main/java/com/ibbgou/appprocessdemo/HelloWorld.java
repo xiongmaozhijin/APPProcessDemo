@@ -1,6 +1,12 @@
 package com.ibbgou.appprocessdemo;
 
+import android.os.Environment;
+
 import com.ibbgou.appprocessdemo.fpspro.FPSMeter;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 
 public class HelloWorld {
 
@@ -20,12 +26,29 @@ public class HelloWorld {
 
         int i = 0;
         while (true) {
-            if (i++ >= 1000) break;
-            System.out.println("fps:" + fps);
+            if (i++ >= 60) break;
+            System.out.println("fps-:" + fps);
+            writeFps(fps);
+
             Thread.sleep(1_000L);
         }
         mFpsMeter.stopMonitor();
 
         System.out.println("Hello Android end");
+    }
+
+    private static void writeFps(int fps) {
+        try {
+            final File directory = Environment.getExternalStorageDirectory();
+            File file = new File(directory, "fps.txt");
+            FileWriter fileWriter = new FileWriter(file, false);
+            BufferedWriter bufferedWriter = new BufferedWriter(fileWriter);
+            bufferedWriter.write(String.valueOf(fps));
+            bufferedWriter.flush();
+            bufferedWriter.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.out.println("Hello Android error:" + e.getLocalizedMessage());
+        }
     }
 }
